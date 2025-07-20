@@ -1,0 +1,156 @@
+ARRAY_LEN	main.c	/^#define ARRAY_LEN(arr) sizeof(arr)\/sizeof(*arr)$/
+ARRAY_LEN	parser.c	/^#define ARRAY_LEN(arr) sizeof(arr)\/sizeof(*arr);$/
+BACKSLASH	main.c	261
+BACKSPACE	main.c	263
+CARRIAGE_RETURN	main.c	266
+CODE_POINT	main.c	259
+DECIMAL_DIGIT	main.c	116
+DECIMAL_DIGIT	parser.c	91
+DECIMAL_POINT	main.c	115
+DECIMAL_POINT	parser.c	90
+DIGIT	main.c	114
+DIGIT	parser.c	89
+DIGIT_1_9	main.c	113
+DIGIT_1_9	parser.c	88
+END	main.c	121
+END	main.c	269
+END	parser.c	96
+EPSILON	parser.c	218
+ERROR	main.c	109
+ERROR	main.c	257
+ERROR	parser.c	84
+EXPONENT	main.c	117
+EXPONENT	parser.c	92
+EXPONENT_DIGIT	main.c	120
+EXPONENT_DIGIT	parser.c	95
+EXPONENT_NEGATIVE	main.c	119
+EXPONENT_NEGATIVE	parser.c	94
+EXPONENT_POSITIVE	main.c	118
+EXPONENT_POSITIVE	parser.c	93
+FORMFEED	main.c	264
+HORIZONTAL_TAB	main.c	267
+JSON_ARRAY	main.c	32
+JSON_ARRAY	parser.c	45
+JSON_BOOL	main.c	33
+JSON_BOOL	parser.c	46
+JSON_NULL	main.c	34
+JSON_NULL	parser.c	47
+JSON_NUMBER	main.c	30
+JSON_NUMBER	parser.c	43
+JSON_OBJECT	main.c	31
+JSON_OBJECT	parser.c	44
+JSON_PARSER_DONE	main.c	69
+JSON_PARSER_ERROR	main.c	69
+JSON_PARSER_OK	main.c	69
+JSON_STRING	main.c	29
+JSON_STRING	parser.c	42
+Json_AST_Node	main.c	75
+Json_AST_Node	parser.c	51
+Json_Parser	main.c	72
+Json_Tag	main.c	35
+Json_Tag	parser.c	48
+Json_Type	main.c	38
+LINEFEED	main.c	265
+Mparser	parser.c	/^int main(void) {$/
+NEGATIVE	main.c	111
+NEGATIVE	parser.c	86
+Number_State	parser.c	97
+Parser_State	main.c	69
+Property_Map	main.c	63
+QUOTE	main.c	260
+SOLIDUS	main.c	262
+START	main.c	110
+START	main.c	258
+START	parser.c	85
+STR_STATE_SIZE	main.c	270
+String_Builder	main.c	251
+UNICODE_HEX	main.c	268
+ZERO	main.c	112
+ZERO	parser.c	87
+arr	main.c	41
+arr	main.c	52
+arr	main.c	58
+arr	main.c	83
+arr	main.c	89
+arr	main.c	101
+arr	main.c	248
+arr	parser.c	22
+arr	parser.c	59
+arr	parser.c	65
+arr	parser.c	77
+b	main.c	98
+b	parser.c	74
+cap	main.c	85
+cap	main.c	91
+cap	main.c	250
+cap	parser.c	24
+cap	parser.c	61
+cap	parser.c	67
+cursor	main.c	67
+double_equals	parser.c	/^bool double_equals(double a, double b) {$/
+err	main.c	68
+fields	main.c	100
+fields	parser.c	76
+grow	parser.c	/^void grow(void *vec, ptrdiff_t elem_sz) {$/
+json_arr	main.c	40
+json_ast_node	main.c	94
+json_ast_node	parser.c	70
+json_ast_obj_pair	main.c	77
+json_ast_obj_pair	parser.c	53
+json_get_field	main.c	/^Json_AST_Node * json_get_field(Json_Parser *parser/
+json_object	main.c	50
+json_pair	main.c	45
+json_parse	main.c	/^Json_Parser *json_parse(const Json_Type *schema, c/
+json_string	main.c	70
+json_type	main.c	55
+key	main.c	46
+key	main.c	78
+key	parser.c	54
+len	main.c	25
+len	main.c	42
+len	main.c	51
+len	main.c	84
+len	main.c	90
+len	main.c	249
+len	parser.c	23
+len	parser.c	38
+len	parser.c	60
+len	parser.c	66
+lineno	main.c	66
+log_error_from_string_state	main.c	/^void log_error_from_string_state(int state) {$/
+m	main.c	71
+number	main.c	97
+number	parser.c	73
+number_state	main.c	108
+obj	main.c	59
+parse_json_value	main.c	/^Json_AST_Node * parse_json_value(char **json_strin/
+parse_number	main.c	/^Json_AST_Node * parse_number(char **json_string) {/
+parse_number	parser.c	/^Json_AST_Node * parse_number(char *json_string) {$/
+parse_string	main.c	/^Json_AST_Node * parse_string(char **json_string) {/
+run_test	parser.c	/^void run_test(const char *input, double expected, /
+s8	main.c	/^#define s8(str) (s8){ .val=str, .len=(sizeof(str)-/
+s8	main.c	26
+s8	parser.c	/^#define s8(str) (s8){ .val=str, .len=(sizeof(str)-/
+s8	parser.c	39
+schema	main.c	60
+schema	main.c	65
+state	main.c	69
+str_state	main.c	256
+string	main.c	99
+string	parser.c	75
+tag	main.c	56
+type	main.c	47
+type	main.c	95
+type	parser.c	71
+val	main.c	24
+val	main.c	79
+val	parser.c	37
+val	parser.c	55
+value	main.c	102
+value	parser.c	78
+vec_append	main.c	/^#define vec_append(vec, val) do {                 /
+vec_append	parser.c	/^#define vec_append(vec) ({                        /
+vec_json_ast_node	main.c	88
+vec_json_ast_node	parser.c	64
+vec_json_obj_pair	main.c	82
+vec_json_obj_pair	parser.c	58

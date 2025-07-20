@@ -1,0 +1,81 @@
+[START] = {
+    ['-'] = NEGATIVE,
+    ['0'] = ZERO,
+    ['1'] = DIGIT_1_9, ['2'] = DIGIT_1_9, ['3'] = DIGIT_1_9, ['4'] = DIGIT_1_9,
+    ['5'] = DIGIT_1_9, ['6'] = DIGIT_1_9, ['7'] = DIGIT_1_9, ['8'] = DIGIT_1_9,
+    ['9'] = DIGIT_1_9
+},
+[NEGATIVE] = {
+    ['0'] = ZERO,
+    ['1'] = DIGIT_1_9, ['2'] = DIGIT_1_9, ['3'] = DIGIT_1_9, ['4'] = DIGIT_1_9,
+    ['5'] = DIGIT_1_9, ['6'] = DIGIT_1_9, ['7'] = DIGIT_1_9, ['8'] = DIGIT_1_9,
+    ['9'] = DIGIT_1_9
+},
+[ZERO] = {
+    ['.'] = DECIMAL_POINT,
+    ['e'] = EXPONENT,
+    ['E'] = EXPONENT,
+    [' '] = END, ['\n'] = END, ['\r'] = END, ['\t'] = END,
+    [','] = END, ['}'] = END
+},
+[DIGIT_1_9] = {
+    ['0'] = DIGIT, ['1'] = DIGIT, ['2'] = DIGIT, ['3'] = DIGIT, ['4'] = DIGIT,
+    ['5'] = DIGIT, ['6'] = DIGIT, ['7'] = DIGIT, ['8'] = DIGIT, ['9'] = DIGIT,
+    ['.'] = DECIMAL_POINT,
+    ['e'] = EXPONENT,
+    ['E'] = EXPONENT,
+    [' '] = END, ['\n'] = END, ['\r'] = END, ['\t'] = END,
+    [','] = END, ['}'] = END
+},
+[DIGIT] = {
+    ['0'] = DIGIT, ['1'] = DIGIT, ['2'] = DIGIT, ['3'] = DIGIT, ['4'] = DIGIT,
+    ['5'] = DIGIT, ['6'] = DIGIT, ['7'] = DIGIT, ['8'] = DIGIT, ['9'] = DIGIT,
+    ['.'] = DECIMAL_POINT,
+    ['e'] = EXPONENT,
+    ['E'] = EXPONENT,
+    [' '] = END, ['\n'] = END, ['\r'] = END, ['\t'] = END,
+    [','] = END, ['}'] = END
+},
+[DECIMAL_POINT] = {
+    ['0'] = DECIMAL_DIGIT, ['1'] = DECIMAL_DIGIT, ['2'] = DECIMAL_DIGIT,
+    ['3'] = DECIMAL_DIGIT, ['4'] = DECIMAL_DIGIT, ['5'] = DECIMAL_DIGIT,
+    ['6'] = DECIMAL_DIGIT, ['7'] = DECIMAL_DIGIT, ['8'] = DECIMAL_DIGIT,
+    ['9'] = DECIMAL_DIGIT
+},
+[DECIMAL_DIGIT] = {
+    ['0'] = DECIMAL_DIGIT, ['1'] = DECIMAL_DIGIT, ['2'] = DECIMAL_DIGIT,
+    ['3'] = DECIMAL_DIGIT, ['4'] = DECIMAL_DIGIT, ['5'] = DECIMAL_DIGIT,
+    ['6'] = DECIMAL_DIGIT, ['7'] = DECIMAL_DIGIT, ['8'] = DECIMAL_DIGIT,
+    ['9'] = DECIMAL_DIGIT,
+    ['e'] = EXPONENT, ['E'] = EXPONENT,
+    [' '] = END, ['\n'] = END, ['\r'] = END, ['\t'] = END,
+    [','] = END, ['}'] = END
+},
+[EXPONENT] = {
+    ['+'] = EXPONENT_POSITIVE,
+    ['-'] = EXPONENT_NEGATIVE,
+    ['0'] = EXPONENT_DIGIT, ['1'] = EXPONENT_DIGIT, ['2'] = EXPONENT_DIGIT,
+    ['3'] = EXPONENT_DIGIT, ['4'] = EXPONENT_DIGIT, ['5'] = EXPONENT_DIGIT,
+    ['6'] = EXPONENT_DIGIT, ['7'] = EXPONENT_DIGIT, ['8'] = EXPONENT_DIGIT,
+    ['9'] = EXPONENT_DIGIT
+},
+[EXPONENT_POSITIVE] = {
+    ['0'] = EXPONENT_DIGIT, ['1'] = EXPONENT_DIGIT, ['2'] = EXPONENT_DIGIT,
+    ['3'] = EXPONENT_DIGIT, ['4'] = EXPONENT_DIGIT, ['5'] = EXPONENT_DIGIT,
+    ['6'] = EXPONENT_DIGIT, ['7'] = EXPONENT_DIGIT, ['8'] = EXPONENT_DIGIT,
+    ['9'] = EXPONENT_DIGIT
+},
+[EXPONENT_NEGATIVE] = {
+    ['0'] = EXPONENT_DIGIT, ['1'] = EXPONENT_DIGIT, ['2'] = EXPONENT_DIGIT,
+    ['3'] = EXPONENT_DIGIT, ['4'] = EXPONENT_DIGIT, ['5'] = EXPONENT_DIGIT,
+    ['6'] = EXPONENT_DIGIT, ['7'] = EXPONENT_DIGIT, ['8'] = EXPONENT_DIGIT,
+    ['9'] = EXPONENT_DIGIT
+},
+[EXPONENT_DIGIT] = {
+    ['0'] = EXPONENT_DIGIT, ['1'] = EXPONENT_DIGIT, ['2'] = EXPONENT_DIGIT,
+    ['3'] = EXPONENT_DIGIT, ['4'] = EXPONENT_DIGIT, ['5'] = EXPONENT_DIGIT,
+    ['6'] = EXPONENT_DIGIT, ['7'] = EXPONENT_DIGIT, ['8'] = EXPONENT_DIGIT,
+    ['9'] = EXPONENT_DIGIT,
+    [' '] = END, ['\n'] = END, ['\r'] = END, ['\t'] = END,
+    [','] = END, ['}'] = END
+}
