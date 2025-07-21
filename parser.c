@@ -4,9 +4,10 @@
 #include <assert.h>
 #include <string.h>
 #include <float.h>
-#include <stdio.h>
+#include <stdalign.h>
 
 #include "json_parser.h"
+#define INIT_ARENA_SIZE 1024
 
 enum json_err {
   JSON_ERR_OBJ_CURLY_START,
@@ -44,14 +45,14 @@ struct json_ast_node {
   union {
     bool b;
     double num;
-    unsigned char *s;
+    ustring s;
     struct json_arr {
       struct json_ast_node *arr;
       ptrdiff_t len;
       ptrdiff_t cap;
     } vec;
     struct json_fields {
-      unsigned char **keys;
+      ustring *keys;
       struct json_ast_node *vals;
       ptrdiff_t len;
       ptrdiff_t cap;
@@ -60,45 +61,66 @@ struct json_ast_node {
   } value;
 };
 
+typedef struct arena {
+  char *beg;
+  char *end;
+} Arena; 
+
 struct json_parser {
   int line_num;
   int char_num;
   int max_depth;
-
+  int flags;
+  struct {Arena* arenas; ptrdiff_t len; ptrdiff_t cap;} pool;
+  
   struct json_source  source;
   struct json_allocator allocator;
   struct json_ast_node json_node;
 };
 
-static void free_json_node(struct json_ast_node node, struct json_parser *p);
-
 static void
-parser_free(struct json_parser ctx[static 1], void *ptr)
+arena_push_back(struct json_parser ctx[static 1], Arena a)
 {
-  ctx->allocator.al_free(ptr, ctx->allocator.ctx);
+  if (ctx->pool.len >= ctx->pool.cap) {
+    ptrdiff_t new_cap = ctx->pool.cap == 0 ? 1 : ctx->pool.cap * 2;
+    Arena *tmp = ctx->allocator.al_malloc(new_cap*sizeof(Arena), ctx->allocator.ctx);
+    memset(tmp, 0, new_cap*sizeof(Arena));
+    memcpy(tmp, ctx->pool.arenas, ctx->pool.cap*sizeof(Arena));
+    ctx->allocator.al_free(ctx->pool.arenas, ctx->allocator.ctx);
+    ctx->pool.arenas = tmp;
+    ctx->pool.cap = new_cap;
+  }
+  ctx->pool.arenas[ctx->pool.len++] = a;
+}
+
+static ptrdiff_t
+make_or_find_arena(ptrdiff_t sz, struct json_parser ctx[static 1])
+{
+  for (ptrdiff_t i = 0; i < ctx->pool.len; ++i)
+    if (sz <= ctx->pool.arenas[i].end - ctx->pool.arenas[i].beg)
+      return i;
+  
+  Arena a = {0};
+  ptrdiff_t arena_sz = sz < INIT_ARENA_SIZE ? INIT_ARENA_SIZE : sz + INIT_ARENA_SIZE;
+  a.beg = ctx->allocator.al_malloc(arena_sz, ctx->allocator.ctx);
+  a.end = a.beg + arena_sz;
+  if (a.beg == NULL) return -1;
+  
+  arena_push_back(ctx, a);
+  return ctx->pool.len - 1;
 }
 
 static void *
 parser_malloc(struct json_parser ctx[static 1], ptrdiff_t sz)
 {
-  return ctx->allocator.al_malloc(sz, ctx->allocator.ctx);
-}
-
-static struct json_parser *
-make_parser_from_string(unsigned char **str, ptrdiff_t len, struct json_allocator al)
-{
-  struct json_parser *p = al.al_malloc(sizeof(struct json_parser), al.ctx);
-  p->allocator = al;
-  p->max_depth = 200;
-  p->line_num = 0;
-  p->char_num = 0;
-
-  struct json_string_source_ctx *ssc = al.al_malloc(sizeof(struct json_parser), al.ctx);
-  *ssc = make_ss(*str, len);
-  struct json_source src = string_source_make(ssc);
-  p->source = src;
+  int align = alignof(max_align_t);
+  sz = sz + (align - sz % align)%align;
   
-  return p;
+  ptrdiff_t i = make_or_find_arena(sz, ctx);
+  if (i < 0) return NULL;
+  void *mem = ctx->pool.arenas[i].end - sz;
+  ctx->pool.arenas[i].end -= sz;
+  return mem;
 }
 
 typedef struct {
@@ -111,18 +133,16 @@ static bool
 sb_append_char(String_Builder *sb, unsigned char c, struct json_parser *ctx)
 {
   if (sb->len >= sb->cap -1) {
-    ptrdiff_t new_cap = sb->cap == 0 ? 16 : 2*sb->cap;
+    ptrdiff_t new_cap = sb->cap == 0 ? 32 : 2*sb->cap;
     unsigned char *tmp = parser_malloc(ctx, new_cap);
     memset(tmp, 0, new_cap);
     if (tmp == NULL) {
       // Allocation failure start the cleanup
-      parser_free(ctx, sb->str);
       sb->cap = 0;
       sb->len = 0;
       return false;
     }
     if (sb->str) memcpy(tmp, sb->str, sb->cap);
-    if (sb->str) parser_free(ctx, sb->str);
     sb->str = tmp;
     sb->cap = new_cap;
   }
@@ -131,10 +151,10 @@ sb_append_char(String_Builder *sb, unsigned char c, struct json_parser *ctx)
   return true;
 }
 
-static unsigned char *
+static ustring
 sb_tostr(String_Builder *sb)
 {
-  unsigned char *res = sb->str;
+  ustring res = (ustring) { .s = sb->str, .len = sb->len };
   sb->cap = 0;
   sb->len = 0;
   sb->str = NULL;
@@ -390,12 +410,9 @@ json_vec_append(struct json_arr *arr, struct json_ast_node node, struct json_par
 {
   if (arr->cap <= arr->len) {
     ptrdiff_t old_cap = arr->cap;
-    ptrdiff_t new_cap = (arr->cap == 0 ? 16 : 2*(arr->cap));
+    ptrdiff_t new_cap = (arr->cap == 0 ? 8 : 2*(arr->cap));
     void *tmp = parser_malloc(ctx, new_cap*sizeof(struct json_ast_node));
     if (tmp == NULL) {
-      // Free everything if memory allocation fails
-      for (ptrdiff_t i = 0; i < arr->len; ++i) free_json_node(arr->arr[i], ctx);
-      parser_free(ctx, arr->arr);
       arr->arr = NULL;
       arr->len = 0;
       arr->cap = 0;
@@ -403,7 +420,6 @@ json_vec_append(struct json_arr *arr, struct json_ast_node node, struct json_par
     }
     memset(tmp, 0, new_cap*sizeof(struct json_ast_node));
     if (arr->arr) memcpy(tmp, arr->arr, old_cap*sizeof(struct json_ast_node));
-    if (arr->arr) parser_free(ctx, arr->arr);
     arr->arr = tmp;
     arr->cap = new_cap;
   }
@@ -412,19 +428,13 @@ json_vec_append(struct json_arr *arr, struct json_ast_node node, struct json_par
 }
 
 static bool
-json_obj_append(struct json_fields *obj, unsigned char *key, struct json_ast_node val, struct json_parser *ctx)
+json_obj_append(struct json_fields *obj, ustring key, struct json_ast_node val, struct json_parser *ctx)
 {
   if (obj->cap <= obj->len) {
-    ptrdiff_t new_cap = obj->cap == 0 ? 4 : 2*(obj->cap);
+    ptrdiff_t new_cap = obj->cap == 0 ? 8 : 2*(obj->cap);
     void *tmp_keys = parser_malloc(ctx, sizeof(key)*(new_cap));
     void *tmp_vals = parser_malloc(ctx, sizeof(val)*(new_cap));
     if (!(tmp_keys && tmp_vals)) {
-      for (ptrdiff_t i = 0; i < obj->len; ++i) {
-        free_json_node(obj->vals[i], ctx);
-        parser_free(ctx, obj->keys[i]);
-      }
-      parser_free(ctx, obj->keys);
-      parser_free(ctx, obj->vals);
       obj->keys = NULL;
       obj->vals = NULL;
       obj->len = 0;
@@ -435,8 +445,6 @@ json_obj_append(struct json_fields *obj, unsigned char *key, struct json_ast_nod
     memset(tmp_vals, 0, new_cap*sizeof(val));
     if (obj->keys) memcpy(tmp_keys, obj->keys, obj->cap*sizeof(key));
     if (obj->vals) memcpy(tmp_vals, obj->vals, obj->cap*sizeof(val));
-    if (obj->keys) parser_free(ctx, obj->keys);
-    if (obj->vals) parser_free(ctx, obj->vals);
     obj->keys = tmp_keys;
     obj->vals = tmp_vals;
     obj->cap = new_cap;
@@ -464,8 +472,8 @@ static struct json_ast_node
 parse_json_value(struct json_parser ctx[static 1])
 {
   skip_whitespace(ctx);
-  if (ctx->max_depth <= 0) return make_json_error(JSON_ERR_OOM);
-  --ctx->max_depth;
+  if (ctx->max_depth == 0) return make_json_error(JSON_ERR_OOM);
+  if (ctx->max_depth > 0) --ctx->max_depth;
   switch(get_byte(ctx)) {
   case '{': return parse_object(ctx);
   case '[': return parse_array(ctx);
@@ -489,20 +497,6 @@ parse_json_value(struct json_parser ctx[static 1])
   }
 }
 
-extern void
-parse_json(struct json_parser p[static 1])
-{
-  p->json_node = parse_json_value(p);
-  if (p->json_node.type != JSON_NUMBER) {
-    next_byte(p);
-  }
-  skip_whitespace(p);
-  if (has_next_byte(p)) {
-    free_json_node(p->json_node, p);
-    p->json_node = make_json_error(JSON_ERR_INVALID_END);
-  }
-}
-
 static struct json_ast_node
 make_json_empty_object(void)
 {
@@ -515,37 +509,6 @@ make_json_empty_array(void)
 {
   struct json_ast_node node = { .type = JSON_ARRAY };
   return node;
-}
-
-static void
-free_json_node(struct json_ast_node node, struct json_parser *p)
-{
-  switch (node.type) {
-  case JSON_NUMBER: return;
-  case JSON_BOOL: return;
-  case JSON_NULL: return;
-  case JSON_STRING:
-    if (node.value.s) parser_free(p, (void *)node.value.s);
-    return;
-    
-  case JSON_OBJECT: 
-    for (ptrdiff_t i = 0; i < node.value.obj.len; ++i) {
-      parser_free(p, node.value.obj.keys[i]);
-      free_json_node(node.value.obj.vals[i], p);
-    }
-    if (node.value.obj.keys) parser_free(p, node.value.obj.keys);
-    if (node.value.obj.vals) parser_free(p, node.value.obj.vals);
-    return;
-  
-  case JSON_ARRAY:
-    for (ptrdiff_t i = 0; i < node.value.vec.len; ++i) {
-      free_json_node(node.value.vec.arr[i], p);
-    }
-    if (node.value.vec.arr) parser_free(p, node.value.vec.arr);
-    return;
-    
-  case JSON_ERROR: return;
-  }
 }
 
 
@@ -563,15 +526,12 @@ parse_object(struct json_parser ctx[static 1])
         case '"': {
           struct json_ast_node key_node = parse_base_value(ctx);
           if (key_node.type == JSON_ERROR) {
-            free_json_node(obj_node, ctx);
             return key_node;
           }
           next_byte(ctx);
           skip_whitespace(ctx);
 
           if (get_byte(ctx) != ':') {
-            free_json_node(key_node, ctx);
-            free_json_node(obj_node, ctx);
             return make_json_error(JSON_ERR_COLON_NOT_FOUND);
           }
 
@@ -580,12 +540,11 @@ parse_object(struct json_parser ctx[static 1])
         
           struct json_ast_node val_node = parse_json_value(ctx);
           if (val_node.type == JSON_ERROR) {
-            free_json_node(key_node, ctx);
-            free_json_node(obj_node, ctx);
             return val_node;
           }
-          unsigned char *key = key_node.value.s;
-          key_node.value.s = NULL;
+          ustring key = key_node.value.s;
+          key_node.value.s.s = NULL;
+          key_node.value.s.len = 0;
           json_obj_append(&(obj_node.value.obj), key, val_node, ctx);
           
           if (val_node.type != JSON_NUMBER) {
@@ -601,18 +560,15 @@ parse_object(struct json_parser ctx[static 1])
           } else if (get_byte(ctx) == '}') {
             return obj_node;
           } else {
-            free_json_node(obj_node, ctx);
             return make_json_error(JSON_ERR_OBJ_TRAILING_COMMA);
           }
           
           break;
         }
         default:
-          free_json_node(obj_node, ctx);
           return make_json_error(JSON_ERR_KEY_NOT_STRING);
         }
       }
-      free_json_node(obj_node, ctx);
       return make_json_error(JSON_ERR_INVALID_END);
     }
   }
@@ -638,7 +594,6 @@ parse_array(struct json_parser ctx[static 1])
         case '{': case '[':
           struct json_ast_node val = parse_json_value(ctx);
           if (val.type == JSON_ERROR) {
-            free_json_node(arr_node, ctx);
             return val;
           }
           json_vec_append(&(arr_node.value.vec), val, ctx);
@@ -649,7 +604,6 @@ parse_array(struct json_parser ctx[static 1])
           skip_whitespace(ctx);
           break;
         default:
-          free_json_node(arr_node, ctx);
           return make_json_error(JSON_ERR_ARR_TRAILING_COMMA);
         }
         
@@ -659,11 +613,9 @@ parse_array(struct json_parser ctx[static 1])
         } else if (get_byte(ctx) == ']') {
           return arr_node;
         } else {
-          free_json_node(arr_node, ctx);
           return make_json_error(JSON_ERR_INVALID_END);
         }
       }
-      free_json_node(arr_node, ctx);
       return make_json_error(JSON_ERR_INVALID_END);
     }
   }
@@ -788,7 +740,7 @@ make_json_error(enum json_err err_code)
 }
 
 static struct json_ast_node
-make_json_string(unsigned char *str)
+make_json_string(ustring str)
 {
   struct json_ast_node node = { .type = JSON_STRING };
   node.value.s = str;
@@ -809,7 +761,6 @@ parse_base_value(struct json_parser ctx[static 1])
     switch (current_state) {
     case START: break;
     case ERR_INVALID_START:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_INVALID_START);
     case NULL_N: break;
     case NULL_U: break;
@@ -818,7 +769,6 @@ parse_base_value(struct json_parser ctx[static 1])
       return make_json_null();
       
     case ERR_EXPECTED_NULL:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_EXPECTED_NULL);
     case BOOL_T: break;
     case BOOL_R: break;
@@ -834,10 +784,8 @@ parse_base_value(struct json_parser ctx[static 1])
       return make_json_bool(false);
 
     case ERR_EXPECTED_TRUE:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_EXPECTED_TRUE);
     case ERR_EXPECTED_FALSE:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_EXPECTED_FALSE);
 
     case STR_QUOTE_BEGIN:
@@ -885,7 +833,6 @@ parse_base_value(struct json_parser ctx[static 1])
       break;
 
     case ERR_INVALID_UTF8:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_INVALID_UTF8);
 
     case STR_CONTROL_SLASH: break;
@@ -923,7 +870,6 @@ parse_base_value(struct json_parser ctx[static 1])
       break; 
 
     case ERR_INVALID_ESCAPE_CHAR:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_INVALID_ESCAPE_CHAR);
 
     case STR_CONTROL_U: break;
@@ -969,13 +915,10 @@ parse_base_value(struct json_parser ctx[static 1])
       break; 
 
     case ERR_INVALID_UNICODE_ESCAPE:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_INVALID_UNICODE_ESCAPE);
     case ERR_LONE_SURROGATE:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_LONE_SURROGATE);
     case ERR_UNPAIRED_SURROGATE:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_UNPAIRED_SURROGATE);
 
     case STR_QUOTE_END:
@@ -1009,42 +952,37 @@ parse_base_value(struct json_parser ctx[static 1])
       break; 
 
     case ERR_LEADING_ZEROES:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_LEADING_ZEROES);
     case ERR_PLUS_SIGN:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_PLUS_SIGN);
     case ERR_NO_DIGIT_BEFORE_DECIMAL:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_NO_DIGIT_BEFORE_DECIMAL);
     case ERR_NO_DIGIT_BEFORE_EXPONENT:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_NO_DIGIT_BEFORE_EXPONENT);
     case ERR_NOT_A_NUMBER:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_NOT_A_NUMBER);
     case ERR_DOUBLE_DECIMAL:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_DOUBLE_DECIMAL);
     case ERR_DOUBLE_EXPONENT:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_DOUBLE_EXPONENT);
     case NUM_END:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_number(nb_todouble(nb));
     case JSON_BV_STATE_SIZE:
-      if (sb.str) parser_free(ctx, sb.str);
       return make_json_error(JSON_ERR_CATCH_ALL);
     }
     next_byte(ctx);
   }
   //  printf("\n");
   // To handle the case where the json string is just a number since numbers don't have a fixed ending character
-  if (sb.str) parser_free(ctx, sb.str);
   if (nb.has_num) return make_json_number(nb_todouble(nb));
   else return make_json_error(JSON_ERR_INVALID_END);
 }
 
+static bool
+ustreq(const ustring a, const ustring b)
+{
+  return a.len == b.len && memcmp(a.s, b.s, a.len);
+}
 
 // TODO: Complete the implementation for UTF-16 to UTF-8 conversion
 // DONE: Run and pass the complete json test suite and measure performance as well
@@ -1053,8 +991,135 @@ parse_base_value(struct json_parser ctx[static 1])
 // DONE: Create a json_source ADT that can take either a string or a file or a stream
 // TODO: Create a final header file along with a statically linked library compiled with -Ofast and -pgo
 // DONE: Add custom allocator support
-// TODO: Change the object_fields from being a pair of arrays to a msi hash_map (both double size at full so memory usage will be the same)
 // DONE: Centralize the error handling.
+
+typedef struct json_parser Json_Parser;
+typedef struct json_ast_node Json_View;
+
+Json_Parser *
+make_parser(struct json_source src, struct json_allocator al)
+{
+  struct json_parser *p = al.al_malloc(sizeof(struct json_parser), al.ctx);
+  p->allocator = al;
+  p->line_num = 0;
+  p->char_num = 0;
+  p->max_depth = -1;
+
+  p->source = src;
+  p->pool.arenas = NULL;
+  p->pool.len = 0;
+  p->pool.cap = 0;
+  Arena a = {0};
+  a.beg = al.al_malloc(INIT_ARENA_SIZE, al.ctx);
+  a.end = a.beg + INIT_ARENA_SIZE;
+  arena_push_back(p, a);
+
+  return p;
+}
+void json_parser_set_streaming(Json_Parser *p, bool streaming)
+{
+  if(streaming) p->flags = p->flags | 1;
+}
+void json_parser_set_max_depth(Json_Parser *p, int max_depth)
+{
+  p->max_depth = max_depth;
+}
+int json_parser_linenum(Json_Parser *p)
+{
+  return p->line_num;
+}
+int json_parser_position(Json_Parser *p)
+{
+  return p->char_num;
+}
+void json_parser_reset(Json_Parser *p)
+{
+  p->line_num = 0;
+  p->char_num = 0;
+  for (ptrdiff_t i = 0; i < p->pool.len; ++i)
+    p->allocator.al_free(p->pool.arenas[i].beg, p->allocator.ctx);
+
+  p->allocator.al_free(p->pool.arenas, p->allocator.ctx);
+  p->pool.arenas = NULL;
+  p->pool.len = 0;
+  p->pool.cap = 0;
+}
+const Json_View * json_parse(Json_Parser *p)
+{
+  p->json_node = parse_json_value(p);
+  if (p->json_node.type != JSON_NUMBER) {
+    next_byte(p);
+  }
+
+  // check if the entire json source has been consumed if not streaming
+  if ((p->flags & 1) == 0) {
+    skip_whitespace(p);
+    if (has_next_byte(p)) {
+      p->json_node = make_json_error(JSON_ERR_INVALID_END);
+    }
+  }
+
+  return &p->json_node;
+}
+
+void
+destroy_parser(Json_Parser *p)
+{
+  for (ptrdiff_t i = 0; i < p->pool.len; ++i)
+    p->allocator.al_free(p->pool.arenas[i].beg, p->allocator.ctx);
+
+  p->allocator.al_free(p->pool.arenas, p->allocator.ctx);
+  p->allocator.al_free(p, p->allocator.ctx);
+}
+
+Json_Type json_type(const Json_View *v)
+{
+  return v->type;
+}
+double json_number(const Json_View *v)
+{
+  assert(v->type == JSON_NUMBER);
+  return v->value.num;
+}
+bool json_bool(const Json_View *v)
+{
+  assert(v->type == JSON_BOOL);
+  return v->value.b;
+}
+ustring json_string(const Json_View *v)
+{
+  assert(v->type == JSON_STRING);
+  return v->value.s;
+}
+ptrdiff_t json_array_len(const Json_View *v)
+{
+  assert(v->type == JSON_ARRAY);
+  return v->value.vec.len;
+}
+const Json_View * json_array_at(const Json_View *v, ptrdiff_t i)
+{
+  assert(v->type == JSON_ARRAY);
+  return &(v->value.vec.arr[i]);
+}
+const ustring* json_object_keys(const Json_View *v, ptrdiff_t *out_len)
+{
+  assert(v->type == JSON_OBJECT);
+  *out_len = v->value.obj.len;
+  return (const ustring*)&(v->value.obj.keys);
+}
+const Json_View * json_object_val(const Json_View *v, const ustring key)
+{
+  assert(v->type == JSON_OBJECT);
+  for (ptrdiff_t i = 0; i < v->value.obj.len; ++i) {
+    if (ustreq(key, v->value.obj.keys[i])) return &(v->value.obj.vals[i]);
+  }
+  return NULL;
+}
+const char * json_error(const Json_View *v)
+{
+  assert(v->type == JSON_ERROR);
+  return err_lookup_table[v->value.err_code];
+}
 
 #ifdef TEST
 
@@ -1063,6 +1128,41 @@ parse_base_value(struct json_parser ctx[static 1])
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
+
+struct json_string_source_ctx {
+  unsigned char *json_string;
+  ptrdiff_t len;
+  ptrdiff_t cursor;
+};
+
+static void
+str_next_byte(void *ctx)
+{
+  struct json_string_source_ctx *ss = ctx;
+  ++ss->cursor;
+}
+
+static unsigned char
+str_get_byte(void *ctx)
+{
+  struct json_string_source_ctx *ss = ctx;
+  return ss->json_string[ss->cursor];
+}
+
+static bool
+str_has_next_byte(void *ctx)
+{
+  struct json_string_source_ctx *ss = ctx;
+  return (ss->cursor < ss->len);
+}
+
+struct json_string_source_ctx make_ss(unsigned char *str, ptrdiff_t len) {
+  return (struct json_string_source_ctx){.json_string = str, .len = len, .cursor = 0};
+}
+
+struct json_source string_source_make(struct json_string_source_ctx *ctx) {
+  return (struct json_source){ .next = str_next_byte, .get_byte = str_get_byte, .has_next = str_has_next_byte, .ctx = ctx};
+}
 
 static void
 print_json_node_helper(const struct json_parser *p, const struct json_ast_node node, int level)
@@ -1094,7 +1194,7 @@ print_json_node_helper(const struct json_parser *p, const struct json_ast_node n
     printf("{\n");
     for (int i = 0; i < level; ++i) printf("\t");
     if (node.value.obj.len) {
-      printf("\"%s\"", (char *)node.value.obj.keys[0]);
+      printf("\"%s\"", (char *)node.value.obj.keys[0].s);
       printf(" : ");
       print_json_node_helper(p, node.value.obj.vals[0], level+1);
     }
@@ -1102,7 +1202,7 @@ print_json_node_helper(const struct json_parser *p, const struct json_ast_node n
     for(ptrdiff_t i = 1; i < node.value.obj.len; ++i) {
       printf(",\n");
       for (int i = 0; i < level; ++i) printf("\t");
-      printf("\"%s\"", (char *)node.value.obj.keys[i]);
+      printf("\"%s\"", (char *)node.value.obj.keys[i].s);
       printf(" : ");
       print_json_node_helper(p, node.value.obj.vals[i], level+1);
     }
@@ -1114,7 +1214,7 @@ print_json_node_helper(const struct json_parser *p, const struct json_ast_node n
     printf("%lf", node.value.num);
     break;
   case JSON_STRING:
-    printf("\"%s\"", (char *)node.value.s);
+    printf("\"%s\"", (char *)node.value.s.s);
     break;
   case JSON_ERROR:
     printf("At line number: %d, char number %d %s", p->line_num, p->char_num, err_lookup_table[node.value.err_code]);
@@ -1128,8 +1228,6 @@ print_json_node(const struct json_parser *p, const struct json_ast_node node)
   print_json_node_helper(p, node, 1);
 }
 
-// Reads entire file into a dynamically allocated buffer.
-// Returns pointer (caller must free) and sets out_len
 static char *
 read_file_to_string(const char *path, size_t *out_len)
 {
@@ -1201,10 +1299,12 @@ process_directory(const char *dirpath)
         if (S_ISREG(st.st_mode)) {
             size_t length = 0;
             unsigned char *content = (unsigned char *)read_file_to_string(fullpath, &length);
+            struct json_string_source_ctx ssc = make_ss(content, length);
             unsigned char *begin = content;
             if (content) {
-                struct json_parser *p = make_parser_from_string(&content, length, lib_allocator);
-                parse_json(p);
+                struct json_parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+                json_parser_set_max_depth(p, 200);
+                json_parse(p);
                 
                 if (entry->d_name[0] == 'y') {
                   printf("%s : %s\n", fullpath, p->json_node.type != JSON_ERROR ? "SUCCESS" : "FAIL");
@@ -1219,10 +1319,7 @@ process_directory(const char *dirpath)
                   print_json_node(p, p->json_node);
                   printf("\n");
                 }
-
-                free_json_node(p->json_node, p);
-                parser_free(p, p->source.ctx);
-                parser_free(p, (void *)p);
+                destroy_parser(p);
                 free(begin);
             }
         }
@@ -1231,12 +1328,98 @@ process_directory(const char *dirpath)
     closedir(dir);
 }
 
+static void test_parse_null() {
+  unsigned char * str = (unsigned char *)"null";
+    struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
+    Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+    const Json_View *v = json_parse(p);
+    assert(json_type(v) == JSON_NULL);
+    destroy_parser(p);
+}
+
+static void test_parse_bool() {
+  unsigned char * str = (unsigned char *)"true";
+    struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
+    Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+    const Json_View *v = json_parse(p);
+    assert(json_type(v) == JSON_BOOL);
+    assert(json_bool(v) == true);
+    destroy_parser(p);
+}
+
+static void test_parse_number() {
+  unsigned char * str = (unsigned char *)"123.45";
+    struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
+    Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+    const Json_View *v = json_parse(p);
+    assert(json_type(v) == JSON_NUMBER);
+    assert(json_number(v) == 123.45);
+    destroy_parser(p);
+}
+
+static void test_parse_string() {
+  unsigned char * str = (unsigned char *)"\"hello\"";
+    struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
+    Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+    const Json_View *v = json_parse(p);
+    assert(json_type(v) == JSON_STRING);
+    ustring s = json_string(v);
+    assert(memcmp(s.s, "hello", s.len) == 0);
+    destroy_parser(p);
+}
+
+static void test_parse_array() {
+  unsigned char * str = (unsigned char *)"[1, true, null]";
+    struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
+    Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+    const Json_View *v = json_parse(p);
+    assert(json_type(v) == JSON_ARRAY);
+    assert(json_array_len(v) == 3);
+    assert(json_type(json_array_at(v, 0)) == JSON_NUMBER);
+    assert(json_number(json_array_at(v, 0)) == 1);
+    assert(json_bool(json_array_at(v, 1)) == true);
+    assert(json_type(json_array_at(v, 2)) == JSON_NULL);
+    destroy_parser(p);
+}
+
+void print_ustring(ustring str) {
+  printf("%.*s\n", str.len, (char *)str.s);
+}
+
+static void test_parse_object() {
+  unsigned char * str = (unsigned char *)"{\"a\": 1, \"b\": false}";
+    struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
+    Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+    const Json_View *v = json_parse(p);
+    assert(json_type(v) == JSON_OBJECT);
+    ptrdiff_t count = 0;
+    const ustring *keys = json_object_keys(v, &count);
+    assert(count == 2);
+    for (ptrdiff_t i = 0; i < count; i++) {
+        const ustring key = keys[i];
+        //const Json_View *val = json_object_val(v, key);
+        print_ustring(key);
+        /*if (memcmp(key.s, "a", key.len) == 0) {
+            assert(json_type(val) == JSON_NUMBER);
+        } else if (memcmp(key.s, "b", key.len) == 0) {
+            assert(json_type(val) == JSON_BOOL);
+            }*/
+    }
+    destroy_parser(p);
+}
+
+
 int 
 main(int argc, char **argv)
 {
   (void)argc;
   (void)argv;
-
+  test_parse_null();
+  test_parse_bool();
+  test_parse_number();
+  test_parse_string();
+  test_parse_array();
+  //test_parse_object();
   process_directory("test_files");
 
   return 0;
