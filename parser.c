@@ -981,15 +981,16 @@ parse_base_value(struct json_parser ctx[static 1])
 static bool
 ustreq(const ustring a, const ustring b)
 {
-  return a.len == b.len && memcmp(a.s, b.s, a.len);
+  return a.len == b.len && memcmp(a.s, b.s, a.len) == 0;
 }
 
 // TODO: Complete the implementation for UTF-16 to UTF-8 conversion
+// TODO: Write the output of my tests to stdout
 // DONE: Run and pass the complete json test suite and measure performance as well
 // DONE: Add a top level parse_json() function that takes a json_source object and returns a parser handle
 // DONE: Add line and cursor number information to the parser to improve error handling
 // DONE: Create a json_source ADT that can take either a string or a file or a stream
-// TODO: Create a final header file along with a statically linked library compiled with -Ofast and -pgo
+// DONE: Create a final header file along with a statically linked library compiled with -Ofast and -pgo
 // DONE: Add custom allocator support
 // DONE: Centralize the error handling.
 
@@ -1105,13 +1106,13 @@ const ustring* json_object_keys(const Json_View *v, ptrdiff_t *out_len)
 {
   assert(v->type == JSON_OBJECT);
   *out_len = v->value.obj.len;
-  return (const ustring*)&(v->value.obj.keys);
+  return (const ustring*)v->value.obj.keys;
 }
 const Json_View * json_object_val(const Json_View *v, const ustring key)
 {
   assert(v->type == JSON_OBJECT);
   for (ptrdiff_t i = 0; i < v->value.obj.len; ++i) {
-    if (ustreq(key, v->value.obj.keys[i])) return &(v->value.obj.vals[i]);
+    if (ustreq(key, v->value.obj.keys[i])) return v->value.obj.vals + i;
   }
   return NULL;
 }
@@ -1273,15 +1274,15 @@ read_file_to_string(const char *path, size_t *out_len)
     return buffer;
 }
 
-static void
+static int
 process_directory(const char *dirpath)
 {
     DIR *dir = opendir(dirpath);
     if (!dir) {
         perror("opendir");
-        return;
+        return 1;
     }
-
+    int result = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
@@ -1307,17 +1308,9 @@ process_directory(const char *dirpath)
                 json_parse(p);
                 
                 if (entry->d_name[0] == 'y') {
-                  printf("%s : %s\n", fullpath, p->json_node.type != JSON_ERROR ? "SUCCESS" : "FAIL");
-                  print_json_node(p, p->json_node);
-                  printf("\n"); 
+                  result += p->json_node.type != JSON_ERROR ? 0 : 1;
                 } else if (entry->d_name[0] == 'n') {
-                  printf("%s : %s\n", fullpath, p->json_node.type != JSON_ERROR ? "FAIL" : "SUCCESS");
-                  print_json_node(p, p->json_node);
-                  printf("\n");
-                } else {
-                  printf("%s : %s\n", fullpath, "SUCCESS");
-                  print_json_node(p, p->json_node);
-                  printf("\n");
+                  result += p->json_node.type != JSON_ERROR ? 1 : 0;
                 }
                 destroy_parser(p);
                 free(begin);
@@ -1326,86 +1319,87 @@ process_directory(const char *dirpath)
     }
 
     closedir(dir);
+    return result;
 }
 
-static void test_parse_null() {
+static int test_parse_null() {
   unsigned char * str = (unsigned char *)"null";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
-    assert(json_type(v) == JSON_NULL);
+    if (!(json_type(v) == JSON_NULL)) return 1;
     destroy_parser(p);
+    return 0;
 }
 
-static void test_parse_bool() {
+static int test_parse_bool() {
   unsigned char * str = (unsigned char *)"true";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
-    assert(json_type(v) == JSON_BOOL);
-    assert(json_bool(v) == true);
+    if (!(json_type(v) == JSON_BOOL)) return 1;
+    if (!(json_bool(v) == true)) return 1;
     destroy_parser(p);
+    return 0;
 }
 
-static void test_parse_number() {
+static int test_parse_number() {
   unsigned char * str = (unsigned char *)"123.45";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
-    assert(json_type(v) == JSON_NUMBER);
-    assert(json_number(v) == 123.45);
+    if (!(json_type(v) == JSON_NUMBER)) return 1;
+    if (!(json_number(v) == 123.45)) return 1;
     destroy_parser(p);
+    return 0;
 }
 
-static void test_parse_string() {
+static int test_parse_string() {
   unsigned char * str = (unsigned char *)"\"hello\"";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
-    assert(json_type(v) == JSON_STRING);
+    if (!(json_type(v) == JSON_STRING)) return 1;
     ustring s = json_string(v);
-    assert(memcmp(s.s, "hello", s.len) == 0);
+    if (!(memcmp(s.s, "hello", s.len) == 0)) return 1;
     destroy_parser(p);
+    return 0;
 }
 
-static void test_parse_array() {
+static int test_parse_array() {
   unsigned char * str = (unsigned char *)"[1, true, null]";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
-    assert(json_type(v) == JSON_ARRAY);
-    assert(json_array_len(v) == 3);
-    assert(json_type(json_array_at(v, 0)) == JSON_NUMBER);
-    assert(json_number(json_array_at(v, 0)) == 1);
-    assert(json_bool(json_array_at(v, 1)) == true);
-    assert(json_type(json_array_at(v, 2)) == JSON_NULL);
+    if (!(json_type(v) == JSON_ARRAY)) return 1;
+    if (!(json_array_len(v) == 3)) return 1;
+    if (!(json_type(json_array_at(v, 0)) == JSON_NUMBER)) return 1;
+    if (!(json_number(json_array_at(v, 0)) == 1)) return 1;
+    if (!(json_bool(json_array_at(v, 1)) == true)) return 1;
+    if (!(json_type(json_array_at(v, 2)) == JSON_NULL)) return 1;
+
     destroy_parser(p);
+    return 0;
 }
 
-void print_ustring(ustring str) {
-  printf("%.*s\n", str.len, (char *)str.s);
-}
-
-static void test_parse_object() {
+static int test_parse_object() {
   unsigned char * str = (unsigned char *)"{\"a\": 1, \"b\": false}";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
-    assert(json_type(v) == JSON_OBJECT);
+    if (!(json_type(v) == JSON_OBJECT)) return 1;
     ptrdiff_t count = 0;
+
     const ustring *keys = json_object_keys(v, &count);
-    assert(count == 2);
-    for (ptrdiff_t i = 0; i < count; i++) {
-        const ustring key = keys[i];
-        //const Json_View *val = json_object_val(v, key);
-        print_ustring(key);
-        /*if (memcmp(key.s, "a", key.len) == 0) {
-            assert(json_type(val) == JSON_NUMBER);
-        } else if (memcmp(key.s, "b", key.len) == 0) {
-            assert(json_type(val) == JSON_BOOL);
-            }*/
-    }
+    if (!(count == 2)) return 1;
+    const Json_View *val = json_object_val(v, (ustring){.s = (unsigned char *)"a", .len = 1});
+    if (!(val->type == JSON_NUMBER)) return 1;
+    if (!(json_number(val) == 1.0)) return 1;
+    val = json_object_val(v, (ustring){.s = (unsigned char *)"b", .len = 1});
+    if (!(val->type == JSON_BOOL)) return 1;
+    if (!(json_bool(val) == false)) return 1;
     destroy_parser(p);
+    return 0;
 }
 
 
@@ -1414,15 +1408,17 @@ main(int argc, char **argv)
 {
   (void)argc;
   (void)argv;
-  test_parse_null();
-  test_parse_bool();
-  test_parse_number();
-  test_parse_string();
-  test_parse_array();
-  //test_parse_object();
-  process_directory("test_files");
+  int res = 0;
+  res += test_parse_null();
+  res += test_parse_bool();
+  res += test_parse_number();
+  res += test_parse_string();
+  res += test_parse_array();
+  res += test_parse_object();
+  res += process_directory("test_files");
 
-  return 0;
+  // if any test fails the result is non zero
+  return res;
 }
 
 #endif
