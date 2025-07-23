@@ -261,7 +261,7 @@ ub_toutf8(utf16_builder ub)
 {
   uint16_t hs = ((ub.hex & 0xFFFF0000) >> 16);
   uint16_t ls = ub.hex & 0xFFFF;
-  if (hs >= 0x0000 && hs <= 0x007F) {
+  if (hs <= 0x007F) {
     return (utf8) {.b1 = (unsigned char)hs, .b2 = 0, .b3 = 0, .b4 = 0};
   } else if (hs >= 0x0080 && hs <= 0x07FF) {
     uint8_t b1 = 0b11000000;
@@ -269,7 +269,7 @@ ub_toutf8(utf16_builder ub)
     b1 = b1 | ((hs & 0b1111100000000000)>>11);
     b2 = b2 |  (hs & 0b0000000000111111);
     return (utf8){ .b1 = b1, .b2 = b2, .b3 = 0, .b4 = 0};
-  } else if ((hs >= 0x0800 && hs <= 0xD7FF) || (hs >= 0xE000 && hs <= 0xFFFF)) {
+  } else if ((hs >= 0x0800 && hs <= 0xD7FF) || hs >= 0xE000) {
     uint8_t b1 = 0b11100000;
     uint8_t b2 = 0b10000000;
     uint8_t b3 = 0b10000000;
