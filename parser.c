@@ -4,10 +4,12 @@
 #include <assert.h>
 #include <string.h>
 #include <float.h>
+#include <stdint.h>
 #include <stdalign.h>
+#include <stdio.h>
 
 #include "json_parser.h"
-#define INIT_ARENA_SIZE 1024
+#define INIT_ARENA_SIZE 1024*1024
 
 enum json_err {
   JSON_ERR_OBJ_CURLY_START,
@@ -99,12 +101,14 @@ make_or_find_arena(ptrdiff_t sz, struct json_parser ctx[static 1])
   for (ptrdiff_t i = 0; i < ctx->pool.len; ++i)
     if (sz <= ctx->pool.arenas[i].end - ctx->pool.arenas[i].beg)
       return i;
-  
+
   Arena a = {0};
-  ptrdiff_t arena_sz = sz < INIT_ARENA_SIZE ? INIT_ARENA_SIZE : sz + INIT_ARENA_SIZE;
+  ptrdiff_t arena_sz = sz < INIT_ARENA_SIZE ? INIT_ARENA_SIZE : sz;
   a.beg = ctx->allocator.al_malloc(arena_sz, ctx->allocator.ctx);
   a.end = a.beg + arena_sz;
-  if (a.beg == NULL) return -1;
+  if (a.beg == NULL) {
+    return -1;
+  }
   
   arena_push_back(ctx, a);
   return ctx->pool.len - 1;
@@ -113,11 +117,14 @@ make_or_find_arena(ptrdiff_t sz, struct json_parser ctx[static 1])
 static void *
 parser_malloc(struct json_parser ctx[static 1], ptrdiff_t sz)
 {
+  if (sz <= 0) return NULL;
   int align = alignof(max_align_t);
   sz = sz + (align - sz % align)%align;
   
   ptrdiff_t i = make_or_find_arena(sz, ctx);
-  if (i < 0) return NULL;
+  if (i < 0) {
+    return NULL;
+  }
   void *mem = ctx->pool.arenas[i].end - sz;
   ctx->pool.arenas[i].end -= sz;
   return mem;
@@ -133,7 +140,7 @@ static bool
 sb_append_char(String_Builder *sb, unsigned char c, struct json_parser *ctx)
 {
   if (sb->len >= sb->cap -1) {
-    ptrdiff_t new_cap = sb->cap == 0 ? 32 : 2*sb->cap;
+    ptrdiff_t new_cap = sb->cap == 0 ? 64 : 2*sb->cap;
     unsigned char *tmp = parser_malloc(ctx, new_cap);
     memset(tmp, 0, new_cap);
     if (tmp == NULL) {
@@ -162,8 +169,7 @@ sb_tostr(String_Builder *sb)
 }
 
 typedef struct {
-  unsigned char hex[2];
-  unsigned char ls[2];
+  uint32_t hex;
   int cursor;
   int lscursor;
 } utf16_builder;
@@ -225,13 +231,13 @@ static void
 ub_append_hex(utf16_builder *ub, unsigned char h)
 {
   if (ub->cursor == 0) {
-    ub->hex[0] = (convert_to_hex_digit(h)<<4);
+    ub->hex = (convert_to_hex_digit(h)<<28);
   } else if (ub->cursor == 1) {
-    ub->hex[0] = ub->hex[0] + convert_to_hex_digit(h);
+    ub->hex += (convert_to_hex_digit(h)<<24);
   } else if (ub->cursor == 2) {
-    ub->hex[1] = (convert_to_hex_digit(h)<<4);
+    ub->hex += (convert_to_hex_digit(h)<<20);
   } else if (ub->cursor == 3) {
-    ub->hex[1] = ub->hex[1] + convert_to_hex_digit(h);
+    ub->hex += (convert_to_hex_digit(h)<<16);
   }
   ++ub->cursor;
 }
@@ -240,20 +246,56 @@ static void
 ub_append_lshex(utf16_builder *ub, unsigned char h)
 {
   if (ub->lscursor == 0) {
-    ub->ls[0] = (convert_to_hex_digit(h)<<4);
+    ub->hex += (convert_to_hex_digit(h)<<12);
   } else if (ub->lscursor == 1) {
-    ub->ls[0] = ub->ls[0] + convert_to_hex_digit(h);
+    ub->hex += (convert_to_hex_digit(h)<<8);
   } else if (ub->lscursor == 2) {
-    ub->ls[1] = (convert_to_hex_digit(h)<<4);
+    ub->hex += (convert_to_hex_digit(h)<<4);
   } else if (ub->lscursor == 3) {
-    ub->ls[1] = ub->ls[1] + convert_to_hex_digit(h);
+    ub->hex += convert_to_hex_digit(h);
   }
   ++ub->lscursor;
 }
 static utf8
 ub_toutf8(utf16_builder ub)
 {
-  (void)ub;
+  uint16_t hs = ((ub.hex & 0xFFFF0000) >> 16);
+  uint16_t ls = ub.hex & 0xFFFF;
+  if (hs >= 0x0000 && hs <= 0x007F) {
+    return (utf8) {.b1 = (unsigned char)hs, .b2 = 0, .b3 = 0, .b4 = 0};
+  } else if (hs >= 0x0080 && hs <= 0x07FF) {
+    uint8_t b1 = 0b11000000;
+    uint8_t b2 = 0b10000000;
+    b1 = b1 | ((hs & 0b1111100000000000)>>11);
+    b2 = b2 |  (hs & 0b0000000000111111);
+    return (utf8){ .b1 = b1, .b2 = b2, .b3 = 0, .b4 = 0};
+  } else if ((hs >= 0x0800 && hs <= 0xD7FF) || (hs >= 0xE000 && hs <= 0xFFFF)) {
+    uint8_t b1 = 0b11100000;
+    uint8_t b2 = 0b10000000;
+    uint8_t b3 = 0b10000000;
+    b1 = b1 | ((hs & 0b1111000000000000)>>12);
+    b2 = b2 | ((hs & 0b0000111111000000)>>6);
+    b3 = b3 | ((hs & 0b0000000000111111));
+    return (utf8){ .b1 = b1, .b2 = b2, .b3 = b3, .b4 = 0};
+  } else if ((hs >= 0xD800 && hs <= 0xDBFF) && (ls >= 0xDC00 && ls <= 0xDFFF)) {
+    uint32_t code_point = 0x10000;
+    // uuuuvvvvwwwwxxxxyyyyzzzz
+    //top 10 bits
+    code_point += ((uint32_t)(hs - 0xD800))<<10;
+    //is the lower 10 bits;
+    code_point += (ls - 0xDC00);
+    uint8_t b1 = 0b11110000;
+    uint8_t b2 = 0b10000000;
+    uint8_t b3 = 0b10000000;
+    uint8_t b4 = 0b10000000;
+    b1 = b1 | ((code_point>>18) & 0b111);
+    b2 = b2 | ((code_point>>12) & 0b111111);
+    b3 = b3 | ((code_point>>6)  & 0b111111);
+    b4 = b4 | ((code_point)     & 0b111111);
+    return (utf8){.b1 = b1, .b2 = b2, .b3 = b3, .b4 = b4};
+  } else {
+    assert(false);
+  }
   return (utf8){ .b1='a' };
 }
 
@@ -410,7 +452,7 @@ json_vec_append(struct json_arr *arr, struct json_ast_node node, struct json_par
 {
   if (arr->cap <= arr->len) {
     ptrdiff_t old_cap = arr->cap;
-    ptrdiff_t new_cap = (arr->cap == 0 ? 8 : 2*(arr->cap));
+    ptrdiff_t new_cap = (arr->cap == 0 ? 64 : 2*(arr->cap));
     void *tmp = parser_malloc(ctx, new_cap*sizeof(struct json_ast_node));
     if (tmp == NULL) {
       arr->arr = NULL;
@@ -472,11 +514,18 @@ static struct json_ast_node
 parse_json_value(struct json_parser ctx[static 1])
 {
   skip_whitespace(ctx);
-  if (ctx->max_depth == 0) return make_json_error(JSON_ERR_OOM);
+  if (ctx->max_depth == 0) {
+      return make_json_error(JSON_ERR_OOM);
+    }
   if (ctx->max_depth > 0) --ctx->max_depth;
+  struct json_ast_node node;
   switch(get_byte(ctx)) {
-  case '{': return parse_object(ctx);
-  case '[': return parse_array(ctx);
+  case '{':
+    node = parse_object(ctx);
+    break;
+  case '[':
+    node = parse_array(ctx);
+    break;
   case '"':
   case '-':
   case '0':
@@ -492,9 +541,14 @@ parse_json_value(struct json_parser ctx[static 1])
   case 'n':
   case 't':
   case 'f':
-    return parse_base_value(ctx);
-  default: return make_json_error(JSON_ERR_INVALID_START);
+    node = parse_base_value(ctx);
+    break;
+  default:
+    node = make_json_error(JSON_ERR_INVALID_START);
+    break;
   }
+  if (ctx->max_depth > 0) ++ctx->max_depth;
+  return node;
 }
 
 static struct json_ast_node
@@ -705,7 +759,7 @@ enum json_bv_state {
     JSON_BV_STATE_SIZE
 };
 
-static const enum json_bv_state transition_table[JSON_BV_STATE_SIZE+1][256] = {
+static const enum json_bv_state transition_table[JSON_BV_STATE_SIZE][256] = {
   #include "bv_transition.table"
 };
 
@@ -984,13 +1038,13 @@ ustreq(const ustring a, const ustring b)
   return a.len == b.len && memcmp(a.s, b.s, a.len) == 0;
 }
 
-// TODO: Complete the implementation for UTF-16 to UTF-8 conversion
-// TODO: Write the output of my tests to stdout
+// DONE: Complete the implementation for UTF-16 to UTF-8 conversion
+// DONE: Write the output of my tests to stdout
 // DONE: Run and pass the complete json test suite and measure performance as well
 // DONE: Add a top level parse_json() function that takes a json_source object and returns a parser handle
 // DONE: Add line and cursor number information to the parser to improve error handling
 // DONE: Create a json_source ADT that can take either a string or a file or a stream
-// DONE: Create a final header file along with a statically linked library compiled with -Ofast and -pgo
+// DONE: Create a final header file
 // DONE: Add custom allocator support
 // DONE: Centralize the error handling.
 
@@ -1311,7 +1365,10 @@ process_directory(const char *dirpath)
                   result += p->json_node.type != JSON_ERROR ? 0 : 1;
                 } else if (entry->d_name[0] == 'n') {
                   result += p->json_node.type != JSON_ERROR ? 1 : 0;
+                } else if (entry->d_name[0] == 'i') {
+                  fprintf(stdout, "Test on file %s : %s\n", entry->d_name, p->json_node.type == JSON_ERROR ? "DISALLOWED" : "ALLOWED");
                 }
+                if (result != 0) return 1;
                 destroy_parser(p);
                 free(begin);
             }
@@ -1328,6 +1385,7 @@ static int test_parse_null() {
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
     if (!(json_type(v) == JSON_NULL)) return 1;
+    fprintf(stdout, "test parse null : SUCCESS\n");
     destroy_parser(p);
     return 0;
 }
@@ -1339,6 +1397,7 @@ static int test_parse_bool() {
     const Json_View *v = json_parse(p);
     if (!(json_type(v) == JSON_BOOL)) return 1;
     if (!(json_bool(v) == true)) return 1;
+    fprintf(stdout, "test parse bool : SUCCESS\n");
     destroy_parser(p);
     return 0;
 }
@@ -1350,6 +1409,7 @@ static int test_parse_number() {
     const Json_View *v = json_parse(p);
     if (!(json_type(v) == JSON_NUMBER)) return 1;
     if (!(json_number(v) == 123.45)) return 1;
+    fprintf(stdout, "test parse number : SUCCESS\n");
     destroy_parser(p);
     return 0;
 }
@@ -1362,28 +1422,30 @@ static int test_parse_string() {
     if (!(json_type(v) == JSON_STRING)) return 1;
     ustring s = json_string(v);
     if (!(memcmp(s.s, "hello", s.len) == 0)) return 1;
+    fprintf(stdout, "test parse string : SUCCESS\n");
     destroy_parser(p);
     return 0;
 }
 
 static int test_parse_array() {
-  unsigned char * str = (unsigned char *)"[1, true, null]";
+    unsigned char * str = (unsigned char *)"[1, true, null, {\"a\": 1}]";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
     if (!(json_type(v) == JSON_ARRAY)) return 1;
-    if (!(json_array_len(v) == 3)) return 1;
+    if (!(json_array_len(v) == 4)) return 1;
     if (!(json_type(json_array_at(v, 0)) == JSON_NUMBER)) return 1;
     if (!(json_number(json_array_at(v, 0)) == 1)) return 1;
     if (!(json_bool(json_array_at(v, 1)) == true)) return 1;
     if (!(json_type(json_array_at(v, 2)) == JSON_NULL)) return 1;
-
+    if (!(json_type(json_array_at(v, 3)) == JSON_OBJECT)) return 1;
+    fprintf(stdout, "test parse array : SUCCESS\n");
     destroy_parser(p);
     return 0;
 }
 
 static int test_parse_object() {
-  unsigned char * str = (unsigned char *)"{\"a\": 1, \"b\": false}";
+    unsigned char * str = (unsigned char *)"{\"a\": 1, \"b\": false}";
     struct json_string_source_ctx ssc = make_ss(str, strlen((char *)str));
     Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
     const Json_View *v = json_parse(p);
@@ -1398,10 +1460,106 @@ static int test_parse_object() {
     val = json_object_val(v, (ustring){.s = (unsigned char *)"b", .len = 1});
     if (!(val->type == JSON_BOOL)) return 1;
     if (!(json_bool(val) == false)) return 1;
+    fprintf(stdout, "test parse object : SUCCESS\n");
     destroy_parser(p);
     return 0;
 }
 
+#ifdef PERF_TEST
+
+
+struct json_file_ctx {
+  FILE *f;
+  int c;
+};
+
+static void
+file_next_byte(void *ctx)
+{
+  struct json_file_ctx *ss = ctx;
+  int val = fgetc(ss->f);
+  if (val != EOF) {
+    ss->c = val;
+  }
+}
+
+static unsigned char
+file_get_byte(void *ctx)
+{
+  struct json_file_ctx *ss = ctx;
+  return (unsigned char)ss->c;
+}
+
+static bool
+file_has_next_byte(void *ctx)
+{
+  struct json_file_ctx *ss = ctx;
+  return (ss->c == EOF);
+}
+
+struct json_source file_source_make(char *fname, struct json_file_ctx *ctx) {
+  ctx->f = fopen(fname, "r");
+  ctx->c = fgetc(ctx->f);
+  return (struct json_source) {
+    .next = file_next_byte,
+    .get_byte = file_get_byte,
+    .has_next = file_has_next_byte,
+    .ctx = (void*)ctx,
+  };
+}
+
+char *read_entire_file(const char *filename, ptrdiff_t *out_len) {
+    // Open the file for reading
+    FILE *file = fopen(filename, "rb");
+    if (!file) {
+        perror("File opening failed");
+        return NULL;
+    }
+
+    // Move the file pointer to the end of the file to determine its size
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    if (file_size == -1) {
+        perror("Failed to determine file size");
+        fclose(file);
+        return NULL;
+    }
+
+    // Move the file pointer back to the beginning of the file
+    fseek(file, 0, SEEK_SET);
+
+    // Allocate memory to store the file content
+    char *buffer = (char *)malloc(file_size + 1);  // +1 for the null terminator
+    if (!buffer) {
+        perror("Memory allocation failed");
+        fclose(file);
+        return NULL;
+    }
+
+    // Read the file content into the buffer
+    size_t bytes_read = fread(buffer, 1, file_size, file);
+    if (bytes_read != file_size) {
+        perror("Failed to read entire file");
+        free(buffer);
+        fclose(file);
+        return NULL;
+    }
+
+    // Null-terminate the string
+    buffer[file_size] = '\0';
+
+    // Set the output length
+    if (out_len) {
+        *out_len = file_size;
+    }
+
+    // Close the file and return the buffer
+    fclose(file);
+    return buffer;
+}
+
+#include <time.h>
+#endif
 
 int 
 main(int argc, char **argv)
@@ -1409,6 +1567,21 @@ main(int argc, char **argv)
   (void)argc;
   (void)argv;
   int res = 0;
+
+  #ifdef PERF_TEST
+  ptrdiff_t len;
+  unsigned char *str = read_entire_file("large-file.json", &len);
+  struct json_string_source_ctx ssc = make_ss(str, len);
+  Json_Parser *p = make_parser(string_source_make(&ssc), lib_allocator);
+  json_parser_set_max_depth(p, 200);
+  clock_t start_time = clock();
+  const Json_View *v = json_parse(p);
+  clock_t end_time = clock();
+  //print_json_node(p, *v);
+  fprintf(stderr, "\n Function execution time: %lf seconds\n", (double)(end_time - start_time)/CLOCKS_PER_SEC);
+  destroy_parser(p);
+  free(str);
+  #else
   res += test_parse_null();
   res += test_parse_bool();
   res += test_parse_number();
@@ -1416,7 +1589,7 @@ main(int argc, char **argv)
   res += test_parse_array();
   res += test_parse_object();
   res += process_directory("test_files");
-
+  #endif
   // if any test fails the result is non zero
   return res;
 }
